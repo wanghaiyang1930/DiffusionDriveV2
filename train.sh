@@ -1,0 +1,2 @@
+export PYTHONPATH=$PWD:$PYTHONPATH
+python ./navsim/planning/script/run_training.py agent=diffusiondrivev2_rl_agent experiment_name=training_diffusiondrivev2_rl_agent train_test_split=mini agent.checkpoint_path=ckpts/DiffusionDrive/diffusiondrive_navsim_88p1_PDMS split=trainval trainer.params.max_epochs=1 cache_path="${NAVSIM_EXP_ROOT}/training_cache/" use_cache_without_dataset=True force_cache_computation=False
