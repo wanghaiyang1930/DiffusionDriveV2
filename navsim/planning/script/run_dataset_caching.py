@@ -40,6 +40,7 @@ def cache_features(args: List[Dict[str, Union[List[str], DictConfig]]]) -> List[
     scene_filter: SceneFilter = instantiate(cfg.train_test_split.scene_filter)
     scene_filter.log_names = log_names
     scene_filter.tokens = tokens
+    
     scene_loader = SceneLoader(
         sensor_blobs_path=Path(cfg.sensor_blobs_path),
         data_path=Path(cfg.navsim_log_path),
@@ -65,10 +66,15 @@ def main(cfg: DictConfig) -> None:
     :param cfg: omegaconf dictionary
     """
 
+    # Configure logger to propagate to root logger (which Hydra configures with file handler)
+    # This ensures all logger.info() calls will be written to file
+    logger.setLevel(logging.INFO)
+    logger.propagate = True  # Ensure messages propagate to root logger for file logging
+    
+    # Also add console handler for immediate output
     console_handler = logging.StreamHandler()
     console_handler.setFormatter(logging.Formatter('%(asctime)s - %(name)s - %(levelname)s - %(message)s'))
     logger.addHandler(console_handler)
-    logger.setLevel(logging.INFO)
 
     logger.info("Global Seed set to 0")
     pl.seed_everything(0, workers=True)

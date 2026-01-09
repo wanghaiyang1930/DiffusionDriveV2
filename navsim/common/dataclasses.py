@@ -175,6 +175,7 @@ class AgentInput:
             )
             global_ego_poses.append(global_ego_pose)
 
+        # StateSE2：x, y, heading.
         local_ego_poses = convert_absolute_to_relative_se2_array(
             StateSE2(*global_ego_poses[-1]), np.array(global_ego_poses, dtype=np.float64)
         )

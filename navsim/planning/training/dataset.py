@@ -48,6 +48,7 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         """
         super().__init__()
         assert Path(cache_path).is_dir(), f"Cache path {cache_path} does not exist!"
+        logger.info(f"[CacheOnlyDataset] cache_path: {cache_path}")
         self._cache_path = Path(cache_path)
 
         if log_names is not None:
@@ -58,6 +59,8 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
         if 'metric' in cache_path:
             self.metric_cache_loader = MetricCacheLoader(Path(cache_path))
 
+        logger.info(f"[CacheOnlyDataset] log_names_size: {len(self.log_names)}")
+
         self._feature_builders = feature_builders
         self._target_builders = target_builders
         self._valid_cache_paths: Dict[str, Path] = self._load_valid_caches(
@@ -66,7 +69,9 @@ class CacheOnlyDataset(torch.utils.data.Dataset):
             target_builders=self._target_builders,
             log_names=self.log_names,
         )
+        logger.info(f"[CacheOnlyDataset] valid_cache_paths_size: {len(self._valid_cache_paths)}")
         self.tokens = list(self._valid_cache_paths.keys())
+        logger.info(f"[CacheOnlyDataset] tokens_size: {len(self.tokens)}")
 
     def __len__(self) -> int:
         """
@@ -157,11 +162,22 @@ class Dataset(torch.utils.data.Dataset):
         self._feature_builders = feature_builders
         self._target_builders = target_builders
 
+        # cache_path: {NAVSIM_EXP_ROOT}/training_cache
+        logger.info(f"[Dataset] cache_path: {cache_path}")
+        print(f"[Dataset] cache_path: {cache_path}")
+
         self._cache_path: Optional[Path] = Path(cache_path) if cache_path else None
         self._force_cache_computation = force_cache_computation
         self._valid_cache_paths: Dict[str, Path] = self._load_valid_caches(
             self._cache_path, feature_builders, target_builders
         )
+
+        print(f"[Dataset] valid_cache_paths_size: {len(self._valid_cache_paths)}")
+        if len(self._valid_cache_paths) > 0:
+            key = next(iter(self._valid_cache_paths))
+            print(f"[Dataset] element type: {type(key)}, element value: {key}")  
+            value = self._valid_cache_paths[key]
+            print(f"[Dataset] one of the valid_cache_paths: {key}: str({value})")
 
         if self._cache_path is not None:
             self.cache_dataset()
@@ -187,11 +203,14 @@ class Dataset(torch.utils.data.Dataset):
                 for token_path in log_path.iterdir():
                     found_caches: List[bool] = []
                     for builder in feature_builders + target_builders:
+                        # Feature builder unique name: transfuser_feature(example);
+                        # Target builder unique name: transfuser_target(example);
                         data_dict_path = token_path / (builder.get_unique_name() + ".gz")
                         found_caches.append(data_dict_path.is_file())
                     if all(found_caches):
                         valid_cache_paths[token_path.name] = token_path
-
+        logger.info(f"[Dataset] valid_cache_paths_size: {len(valid_cache_paths)}")
+        print(f"[Dataset] valid_cache_paths_size: {len(valid_cache_paths)}")
         return valid_cache_paths
 
     def _cache_scene_with_token(self, token: str) -> None:
@@ -247,6 +266,7 @@ class Dataset(torch.utils.data.Dataset):
 
         assert self._cache_path is not None, "Dataset did not receive a cache path!"
         os.makedirs(self._cache_path, exist_ok=True)
+        print(f"[Dataset] [cache_dataset] cache_path: {self._cache_path}")
 
         # determine tokens to cache
         if self._force_cache_computation:

@@ -1,0 +1,32 @@
+## The format of metadata
+
+```
+['token',
+ 'frame_idx',
+ 'timestamp',
+ 'log_name',
+ 'log_token',
+ 'scene_name',
+ 'scene_token',
+ 'map_location',
+ 'roadblock_ids',
+ 'vehicle_name',
+ 'can_bus',
+ 'lidar_path',
+ 'lidar2ego_translation',
+ 'lidar2ego_rotation',
+ 'ego2global_translation',
+ 'ego2global_rotation',
+ 'ego_dynamic_state',
+ 'traffic_lights',
+ 'driving_command',
+ 'cams',
+ 'sample_prev',
+ 'sample_next',
+ 'ego2global',
+ 'lidar2ego',
+ 'lidar2global',
+ 'anns',
+ 'occ_gt_final_path',
+ 'flow_gt_final_path']
+```
