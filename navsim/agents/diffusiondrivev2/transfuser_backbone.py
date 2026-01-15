@@ -20,6 +20,7 @@ class TransfuserBackbone(nn.Module):
 
         super().__init__()
         self.config = config
+        # config.image_architecture: default:resnet34
         try:
             self.image_encoder = timm.create_model(config.image_architecture, pretrained=True, features_only=True)
         except Exception as e:
@@ -41,6 +42,7 @@ class TransfuserBackbone(nn.Module):
 
         self.avgpool_img = nn.AdaptiveAvgPool2d((self.config.img_vert_anchors, self.config.img_horz_anchors))
 
+        # config.lidar_architecture: default:resnet34
         self.lidar_encoder = timm.create_model(
             config.lidar_architecture,
             pretrained=False,
@@ -54,6 +56,17 @@ class TransfuserBackbone(nn.Module):
         self.global_pool_img = nn.AdaptiveAvgPool2d(output_size=1)
         start_index = 0
         # Some networks have a stem layer
+        # Standard Resnet34 has 4 blocks
+        # {'num_chs': 64, 'reduction': 2},   # index 0: layer1
+        # {'num_chs': 128, 'reduction': 4},  # index 1: layer2
+        # {'num_chs': 256, 'reduction': 8},  # index 2: layer3
+        # {'num_chs': 512, 'reduction': 16}, # index 3: layer4
+        # Non-standard networks may have more blocks.
+        # {'num_chs': 32, 'reduction': 2},   # index 0: stem (skip)
+        # {'num_chs': 64, 'reduction': 2},   # index 1: layer1 
+        # {'num_chs': 128, 'reduction': 4},  # index 2: layer2
+        # {'num_chs': 256, 'reduction': 8},  # index 3: layer3 
+        # {'num_chs': 512, 'reduction': 16}, # index 4: layer4
         if len(self.image_encoder.return_layers) > 4:
             start_index += 1
 
