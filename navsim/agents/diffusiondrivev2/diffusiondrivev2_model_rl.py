@@ -280,9 +280,9 @@ class AgentHead(nn.Module):
     ):
         """
         Initializes prediction head.
-        :param num_agents: maximum number of agents to predict
-        :param d_ffn: dimensionality of feed-forward network
-        :param d_model: input dimensionality
+        :param num_agents: maximum number of agents to predict(default: )
+        :param d_ffn: dimensionality of feed-forward network(default: 1024)
+        :param d_model: input dimensionality(default: 256)
         """
         super(AgentHead, self).__init__()
 
@@ -301,12 +301,18 @@ class AgentHead(nn.Module):
         )
 
     def forward(self, agent_queries) -> Dict[str, torch.Tensor]:
-        """Torch module forward pass."""
+        """
+        Torch module forward pass.
+        :param agent_queries: agent queries tensor of shape (batch_size, num_agents, d_model)
+        :return: dictionary of agent states and labels
+        """
 
+        # [B, N, D] -> [B, N, 5]
         agent_states = self._mlp_states(agent_queries)
         agent_states[..., BoundingBox2DIndex.POINT] = agent_states[..., BoundingBox2DIndex.POINT].tanh() * 32
         agent_states[..., BoundingBox2DIndex.HEADING] = agent_states[..., BoundingBox2DIndex.HEADING].tanh() * np.pi
 
+        # [B, N, D] -> [B, N, 1] -> [B, N]
         agent_labels = self._mlp_label(agent_queries).squeeze(dim=-1)
 
         return {"agent_states": agent_states, "agent_labels": agent_labels}

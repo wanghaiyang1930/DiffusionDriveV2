@@ -7,7 +7,10 @@ from navsim.planning.simulation.planner.pdm_planner.utils.pdm_enums import Leadi
 
 
 class BatchIDMPolicy:
-    """IDM policies operating on a batch of proposals."""
+    """
+    IDM policies operating on a batch of proposals.
+    IDM: Intelligent Driver Model.
+    """
 
     def __init__(
         self,
