@@ -239,6 +239,7 @@ def pdm_score_para(
         raise ValueError("Empty trajectory batch.")
 
     initial_ego_state = metric_cache.ego_state
+    # MetricCache.trajectory: 是一个什么性质的轨迹？专家轨迹？还是其他什么轨迹？
     pdm_trajectory    = metric_cache.trajectory
     pdm_states        = get_trajectory_as_array(
         pdm_trajectory, future_sampling, initial_ego_state.time_point)

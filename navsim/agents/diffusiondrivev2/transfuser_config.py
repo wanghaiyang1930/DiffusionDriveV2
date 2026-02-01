@@ -11,6 +11,7 @@ from nuplan.planning.simulation.trajectory.trajectory_sampling import Trajectory
 class TransfuserConfig:
     """Global TransFuser config."""
 
+    # default: num_poses = time_horizon / interval_length
     trajectory_sampling: TrajectorySampling = TrajectorySampling(time_horizon=4, interval_length=0.5)
 
     image_architecture: str = "resnet34"
