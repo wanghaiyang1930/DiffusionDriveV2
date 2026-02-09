@@ -207,13 +207,18 @@ class V2TransfuserModel(nn.Module):
         )
 
         self._trajectory_head = TrajectoryHead(
+            # default: 8
             num_poses=config.trajectory_sampling.num_poses,
+            # default: 1024
             d_ffn=config.tf_d_ffn,
+            # default: 256
             d_model=config.tf_d_model,
+            # default: kmeans_navsim_traj_20.npy
             plan_anchor_path=config.plan_anchor_path,
             config=config,
         )
         self.bev_proj = nn.Sequential(
+            # Linear ReLU LayerNorm
             *linear_relu_ln(256, 1, 1,320),
         )
 
@@ -363,6 +368,7 @@ class DiffMotionPlanningRefinementModule(nn.Module):
         plan_reg = traj_delta.reshape(bs,ego_fut_mode, self.ego_fut_ts, 3)
 
         return plan_reg, plan_cls
+
 class ModulationLayer(nn.Module):
 
     def __init__(self, embed_dims: int, condition_dims: int):
@@ -694,8 +700,11 @@ class TrajectoryHead(nn.Module):
         """
         super(TrajectoryHead, self).__init__()
 
+        # default: 8
         self._num_poses = num_poses
+        # default: 256
         self._d_model = d_model
+        # default: 1024
         self._d_ffn = d_ffn
         self.diff_loss_weight = 2.0
         self.ego_fut_mode = 20
@@ -712,14 +721,33 @@ class TrajectoryHead(nn.Module):
             beta_schedule="scaled_linear",
             prediction_type="sample",
         )
+        # default: 64
+        # num_groups: 轨迹分组数量
+        # 作用：
+        # 1. 将每个 anchor 模式（ego_fut_mode=20）复制 num_groups 次，生成 num_groups * 20 个候选轨迹
+        # 2. 在计算 reward 和 advantage 时，按 group 进行分组统计，便于强化学习训练
+        # 3. 增加轨迹多样性：同一 anchor 模式在不同 group 中可能产生不同的去噪结果
         self.num_groups = config.num_groups
+        # default: kmeans_navsim_traj_20.npy
+        # [20, 8, 2] 20: trajectories, 8: points(total: 4s, step: 0.5s), 2: x, y(units: meter, body)
         plan_anchor = np.load(plan_anchor_path)
 
+        # 作用：
+        # 作为扩散模型的初始锚点：在去噪前添加噪声
+        # 提供先验：20 个典型轨迹模式作为起点
+        # 加速训练：从有意义的锚点开始，而非完全随机
+        # 为什么使用 nn.Parameter 而 不使用 torch.Tensor？
+        # 1. 使用 nn.Parameter：保存的 checkpoint 包含 plan_anchor，加载后可直接使用；
+        # 2. 使用 torch.Tensor：保存时不包含，加载后需要重新从文件加载；
+        # 3. 设备管理：随模型自动移动到 GPU/CPU，
+        #    nn.Parameter model = model.cuda()  也会移到 GPU；
+        #    torch.Tensor model = model.cuda()  不会自动移动，需要手动移动；
         self.plan_anchor = nn.Parameter(
             torch.tensor(plan_anchor, dtype=torch.float32),
             requires_grad=False,
         ) # 20,8,2
         self.plan_anchor_encoder = nn.Sequential(
+            # Linear ReLU LayerNorm(in: 512, out: 256)
             *linear_relu_ln(d_model, 1, 1,512),
             nn.Linear(d_model, d_model),
         )
@@ -812,20 +840,30 @@ class TrajectoryHead(nn.Module):
         roll_timesteps = (np.arange(0, step_num) * step_ratio).round()[::-1].copy().astype(np.int64)
         roll_timesteps = torch.from_numpy(roll_timesteps).to(device)
 
-
+        # default: 64
         num_groups = self.num_groups
         
         # 1. add truncated noise to the plan anchor
-        plan_anchor = self.plan_anchor.unsqueeze(0).unsqueeze(0).repeat(bs,num_groups, 1, 1, 1)  
+        # [20, 8, 2] -> [B, 64, 20, 8, 2]
+        # 将 plan_anchor [20, 8, 2] 扩展为 [B, num_groups, 20, 8, 2]
+        # 每个 anchor 模式（20个）被复制 num_groups 次，用于生成更多候选轨迹
+        plan_anchor = self.plan_anchor.unsqueeze(0).unsqueeze(0).repeat(bs, num_groups, 1, 1, 1)  
 
-        plan_anchor = plan_anchor.view(bs, num_groups * self.ego_fut_mode, *plan_anchor.shape[3:]) # bs num_groups * 20, 8, 2
+        # [B, 64, 20, 8, 2] -> [B, 64 * 20, 8, 2]
+        # 最终生成 num_groups * ego_fut_mode = 64 * 20 = 1280 个候选轨迹
+        plan_anchor = plan_anchor.view(bs, num_groups*self.ego_fut_mode, *plan_anchor.shape[3:]) # bs num_groups * 20, 8, 2
+        # Normalize x, y, yaw; [B, 64 * 20, 8, 2]
         diffusion_output = self.norm_odo(plan_anchor)
 
+        # [B, 64*20, 8, 2]
         noise = torch.randn(diffusion_output.shape, device=device)
+        # [8, 8, ..., 8] len() = B
         trunc_timesteps = torch.ones((bs,), device=device, dtype=torch.long) * 8
         diffusion_output = self.diffusionrl_scheduler.add_noise(original_samples=diffusion_output, noise=noise, timesteps=trunc_timesteps)
 
         all_log_probs = []
+        # all_diffusion_output 保存所有去噪步骤的中间状态
+        # 初始状态: [B, 1280, 8, 2] (1280 = num_groups * ego_fut_mode = 64 * 20)
         all_diffusion_output= [diffusion_output]
 
         for i, k in enumerate(roll_timesteps[:]):
@@ -860,6 +898,9 @@ class TrajectoryHead(nn.Module):
             )
             diffusion_output = prev_sample
             all_log_probs.append(log_prob)
+            # 每次去噪步骤都会产生 1280 条预测轨迹（prev_sample），保存到 all_diffusion_output 中
+            # prev_sample 形状: [B, 1280, 8, 2]，包含 num_groups * ego_fut_mode = 64 * 20 = 1280 条候选轨迹
+            # 这些是去噪过程的中间状态，最终会在返回的 "all_diffusion_output" 中输出
             all_diffusion_output.append(prev_sample) # BG N 8 2
 
         all_log_probs = torch.stack(all_log_probs, dim=-1) # B G*N step_num
@@ -872,6 +913,13 @@ class TrajectoryHead(nn.Module):
 
         target_traj = targets['trajectory'].unsqueeze(1)
         diffusion_output_with_gt = torch.cat((diffusion_output,target_traj),dim=1)
+
+        '''
+        reason: Fix for lost 'trajectory' key in return dict.
+        author: wanghaiyang
+        date: 2026-0125
+        '''
+        reward_group = None
         if cal_pdm:
             reward_group, metric_cache, sub_rewards_group = self.get_pdm_score_para(diffusion_output_with_gt, metric_cache)      # (B,G)
             reward_gt = reward_group[:,-1:]
@@ -889,9 +937,12 @@ class TrajectoryHead(nn.Module):
             }
 
             # 逐anchor
+            # 将 reward 按 (batch, num_groups, ego_fut_mode) 分组
+            # 形状: (B, G*N) -> (B, G, N)，其中 G=num_groups, N=ego_fut_mode
+            # 这样可以在每个 group 内计算相对于组内平均值的 advantage
             reward_group = reward_group.view(bs, num_groups, self.ego_fut_mode)  # (B,G,N)
-            mean_grouped_rewards = reward_group.mean(dim=1)
-            std_grouped_rewards = reward_group.std(dim=1)
+            mean_grouped_rewards = reward_group.mean(dim=1)  # 在每个 group 内，对 20 个 anchor 模式求平均
+            std_grouped_rewards = reward_group.std(dim=1)     # 计算组内标准差
             advantages = (reward_group - mean_grouped_rewards.unsqueeze(1)) / (std_grouped_rewards.unsqueeze(1) + 1e-4)
 
             # 只保留 “好于 GT” 的正向样本
@@ -942,7 +993,23 @@ class TrajectoryHead(nn.Module):
             reward = None
             sub_rewards_mean = None
 
-        return {"all_diffusion_output":all_diffusion_output,"advantages":advantages,'reward':reward,'sub_rewards':sub_rewards_mean}
+        '''
+        reason: Fix for lost 'trajectory' key in return dict.
+        author: wanghaiyang
+        date: 2026-01-25
+        '''
+        # return {"all_diffusion_output":all_diffusion_output,"advantages":advantages,'reward':reward,'sub_rewards':sub_rewards_mean}
+        # Select best trajectory based on reward for visualization
+        if cal_pdm and reward_group is not None:
+            # reward_group shape: (B, G, N) after view, flatten to (B, G*N) for indexing
+            reward_flat = reward_group.view(bs, -1)  # (B, G*N)
+            best_traj_idx = reward_flat.argmax(dim=-1)  # (B,)
+            best_trajectory = diffusion_output[torch.arange(bs, device=diffusion_output.device), best_traj_idx]  # (B, 8, 3)
+        else:
+            # If no reward available, select first trajectory
+            best_trajectory = diffusion_output[:, 0]  # (B, 8, 3)
+
+        return {"all_diffusion_output":all_diffusion_output,"advantages":advantages,'reward':reward,'sub_rewards':sub_rewards_mean,"trajectory":best_trajectory}
 
 
     def forward_test_rl(self, ego_query,agents_query,bev_feature,bev_spatial_shape,status_encoding,status_feature,camera_feature, targets,global_img,metric_cache,eta=0.0) -> Dict[str, torch.Tensor]:
@@ -1014,7 +1081,15 @@ class TrajectoryHead(nn.Module):
 
 
         reward_group, metric_cache, sub_rewards_group = self.get_pdm_score_para(diffusion_output, metric_cache)
-
+        '''
+        reason: Fix for lost 'trajectory' key in return dict.
+        author: wanghaiyang
+        date: 2026-01-25
+        '''
+        # Select best trajectory based on reward for visualization
+        best_traj_idx = reward_group.argmax(dim=-1)  # (B,)
+        best_trajectory = diffusion_output[torch.arange(bs, device=diffusion_output.device), best_traj_idx]  # (B, 8, 3)
+        
         reward_group = reward_group.max(dim=-1)[0]
 
         target_traj = targets['trajectory'].unsqueeze(1)
@@ -1029,29 +1104,48 @@ class TrajectoryHead(nn.Module):
             k: v.mean().item()    # .item() 把 0-D ndarray 转成 Python float
             for k, v in sub_rewards_group.items()
         }
-        return {"loss": trajectory_loss, "reward": reward_group.mean(),'sub_rewards':sub_scores_mean,"all_diffusion_output":all_diffusion_output,"log_probs":all_log_probs}
+        '''
+        reason: Fix for lost 'trajectory' key in return dict.
+        author: wanghaiyang
+        date: 2026-01-25
+        '''
+        # return {"loss": trajectory_loss, "reward": reward_group.mean(),'sub_rewards':sub_scores_mean,"all_diffusion_output":all_diffusion_output,"log_probs":all_log_probs}
+        return {"loss":trajectory_loss, "reward":reward_group.mean(), "sub_rewards":sub_scores_mean, "all_diffusion_output":all_diffusion_output, "log_probs":all_log_probs, "trajectory":best_trajectory}
 
     def get_rlloss(self, ego_query,agents_query,bev_feature,bev_spatial_shape,status_encoding,status_feature,camera_feature, targets,global_img, eta, old_pred):
+        """
+        计算强化学习损失（RL Loss）
+        
+        old_diffusion_output 的作用：
+        1. 保存之前生成的去噪链的所有中间状态 [B, 1280, 8, 2, 11]
+        2. 用于重新计算 log_prob（重要性采样/off-policy 训练）
+        3. 这是两阶段训练的关键：
+           - 第一阶段（forward_train_rl）：生成轨迹并计算 reward/advantages（无梯度）
+           - 第二阶段（get_rlloss）：使用相同轨迹链重新计算 log_prob，然后计算 RL 损失（有梯度）
+        """
+        old_diffusion_output = old_pred['all_diffusion_output']  # [B, 1280, 8, 2, 11] - 之前生成的所有去噪步骤
+        advantages = old_pred['advantages']  # [B, 1280, step_num] - 之前计算的优势值
 
-        old_diffusion_output = old_pred['all_diffusion_output']
-        advantages = old_pred['advantages']
-
-        chains = old_diffusion_output[...,:-1]
-        chains_prev = old_diffusion_output[...,1:]  
+        # 提取去噪链：chains 是输入状态序列，chains_prev 是对应的输出状态序列
+        chains = old_diffusion_output[...,:-1]      # [B, 1280, 8, 2, 10] - 前10个时间步（作为输入）
+        chains_prev = old_diffusion_output[...,1:]   # [B, 1280, 8, 2, 10] - 后10个时间步（作为输出，用于计算 log_prob）  
 
         step_num = 10
         bs = chains.shape[0]
         device = chains.device
         self.diffusionrl_scheduler.set_timesteps(1000, device)
         step_ratio = 20 / step_num
+        # [18, 16, 14, 12, 10, 8, 6, 4, 2, 0]
         roll_timesteps = (np.arange(0, step_num) * step_ratio).round()[::-1].copy().astype(np.int64)
         roll_timesteps = torch.from_numpy(roll_timesteps).to(device)
 
         all_log_probs = []
         poses_reg_steps_list = []
         poses_cls_steps_list = []
+        # 重新遍历去噪链，使用之前生成的状态重新计算 log_prob
         for i, k in enumerate(roll_timesteps[:]):
-            diffusion_output = chains[..., i]
+            # 使用之前生成的第 i 步状态作为输入（固定，不重新采样）
+            diffusion_output = chains[..., i]  # [B, 1280, 8, 2] - 之前生成的状态
             ego_fut_mode = diffusion_output.shape[1]
             x_boxes = torch.clamp(diffusion_output, min=-1, max=1)
             noisy_traj_points = self.denorm_odo(x_boxes)
@@ -1088,17 +1182,23 @@ class TrajectoryHead(nn.Module):
             x_start = poses_reg[..., :2] # bs G*N 8 2
             # x_start = poses_reg
             x_start = self.norm_odo(x_start)
+            # 使用之前生成的下一个状态（chains_prev[...,i]）来计算 log_prob
+            # 这样可以在不重新采样的前提下，重新评估轨迹的概率
+            # 这是 off-policy RL 训练的关键：使用固定轨迹重新计算概率，然后与 advantages 结合
             _, log_prob, _ = self.diffusionrl_scheduler.step(
-                model_output=x_start,
-                timestep=k,
-                sample=diffusion_output,
-                eta=eta,
-                prev_sample=chains_prev[...,i]
+                model_output=x_start,           # 当前模型预测的干净样本
+                timestep=k,                     # 当前时间步
+                sample=diffusion_output,         # 当前输入状态（之前生成的）
+                eta=eta,                         # 噪声权重
+                prev_sample=chains_prev[...,i]   # 之前生成的下一个状态（用于计算 log_prob）
             )
             all_log_probs.append(log_prob)
         all_log_probs = torch.stack(all_log_probs, dim=-1) # BG N step_num
         per_token_logps = all_log_probs.view(bs, self.num_groups * self.ego_fut_mode, -1)  # B G*N step_num
 
+        # 计算重要性采样权重：exp(log_prob - log_prob.detach()) = exp(log_prob) / exp(log_prob.detach())
+        # 然后与 advantages 相乘，得到加权损失
+        # 这是 PPO/REINFORCE 风格的 off-policy 训练
         per_token_loss = -torch.exp(per_token_logps - per_token_logps.detach()) * advantages
 
         # ---------- (1) RL 损失，保留 batch 维 ----------
